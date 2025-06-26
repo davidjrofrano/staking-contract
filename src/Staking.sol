@@ -23,16 +23,17 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
 
     /* ============ STATE VARIABLES =========== */
 
-    uint256 public constant REWARD_DURATION = 350 days;
+    uint256 internal constant ROUND_DURATION = 1000 days;
     uint256 internal constant EARLY_PENALTY_GRACE = 90 days;
-    uint256 public constant LATE_PENALTY_GRACE = 14 days;
+    uint256 internal constant LATE_PENALTY_GRACE = 14 days;
+    uint256 internal constant LATE_PENALTY_SCALE = 700 days;
 
     IERC20 public immutable stakingToken;
 
     address public rewardCharger;
     uint256 public roundCounter = 1;
     uint256 public pendingReward;
-    uint256 public roundStartedAt;
+    uint256 public roundEndTime;
     uint256 public rewardRate;
     uint256 public lastUpdateTime;
     uint256 public rewardPerTokenStored;
@@ -87,8 +88,12 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
         return _totalStaked;
     }
 
+    function isRoundInProgress() public view returns (bool) {
+        return roundEndTime > 0 && block.timestamp < roundEndTime;
+    }
+
     function lastTimeRewardApplicable() public view returns (uint256) {
-        return roundStartedAt + REWARD_DURATION;
+        return block.timestamp < roundEndTime ? block.timestamp : roundEndTime;
     }
 
     function rewardPerToken() public view returns (uint256) {
@@ -97,8 +102,8 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
         }
         return
             rewardPerTokenStored +
-            (((lastTimeRewardApplicable() - lastUpdateTime) * rewardRate) /
-                1e18) *
+            (((lastTimeRewardApplicable() - lastUpdateTime) * rewardRate) *
+                1e18) /
             _totalStaked;
     }
 
@@ -111,7 +116,7 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
     }
 
     function getRewardForDuration() external view returns (uint256) {
-        return rewardRate * REWARD_DURATION;
+        return rewardRate * ROUND_DURATION;
     }
 
     function getStakeIds(
@@ -131,13 +136,13 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
     function stake(
         uint256 amount,
         uint256 duration
-    ) external nonReentrant whenNotPaused {
+    ) external nonReentrant whenNotPaused returns (uint256 stakeId) {
         if (amount == 0) revert ZeroAmount();
 
         _totalStaked += amount;
         stakingToken.safeTransferFrom(msg.sender, address(this), amount);
 
-        uint256 stakeId = stakeIdCounter++;
+        stakeId = stakeIdCounter++;
         stakeInfos[stakeId] = StakeInfo({
             staker: msg.sender,
             amount: amount,
@@ -153,16 +158,19 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
         emit Staked(stakeId, msg.sender, amount, duration);
     }
 
-    function unstake(uint256 stakeId) public nonReentrant {
+    function unstake(uint256 stakeId) public nonReentrant returns (uint256) {
         _updateReward(stakeId);
 
         StakeInfo storage info = stakeInfos[stakeId];
         if (info.staker != msg.sender) revert InvalidStaker();
 
         _totalStaked -= info.amount;
-        stakingToken.safeTransfer(msg.sender, _takePenalty(stakeId));
+
+        uint256 amountToPay = _takePenalty(stakeId);
+        if (amountToPay > 0) stakingToken.safeTransfer(msg.sender, amountToPay);
 
         emit Unstaked(stakeId);
+        return amountToPay;
     }
 
     /* ========= RESTRICTED FUNCTIONS ========= */
@@ -179,25 +187,26 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
         if (reward == 0) revert ZeroAmount();
         stakingToken.safeTransferFrom(rewardCharger, address(this), reward);
 
-        if (block.timestamp >= lastTimeRewardApplicable()) {
+        _updateReward(0);
+
+        if (!isRoundInProgress()) {
             pendingReward += reward;
         } else {
-            uint256 remaining = lastTimeRewardApplicable() - block.timestamp;
+            uint256 remaining = roundEndTime - block.timestamp;
             uint256 leftover = remaining * rewardRate;
             rewardRate = (reward + leftover) / remaining;
-            lastUpdateTime = block.timestamp;
         }
+        lastUpdateTime = block.timestamp;
 
         emit RewardCharged(reward);
     }
 
     function startRound() external onlyOwner {
-        if (roundStartedAt > 0 && lastTimeRewardApplicable() > block.timestamp)
-            revert RoundInProgress();
+        if (isRoundInProgress()) revert RoundInProgress();
 
-        rewardRate = pendingReward / REWARD_DURATION;
+        rewardRate = pendingReward / ROUND_DURATION;
         pendingReward = 0;
-        roundStartedAt = lastUpdateTime = block.timestamp;
+        roundEndTime = block.timestamp + ROUND_DURATION;
 
         emit RoundStarted(roundCounter++);
     }
@@ -217,45 +226,48 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
 
     function _updateReward(uint256 stakeId) internal {
         rewardPerTokenStored = rewardPerToken();
+        lastUpdateTime = lastTimeRewardApplicable();
 
         if (stakeId > 0) {
-            stakeInfos[stakeId].rewardPerToken = rewardPerTokenStored;
             stakeInfos[stakeId].reward = earned(stakeId);
+            stakeInfos[stakeId].rewardPerToken = rewardPerTokenStored;
         }
     }
 
     function _takePenalty(uint256 stakeId) internal returns (uint256) {
         StakeInfo memory info = stakeInfos[stakeId];
+        uint256 realAmount = info.amount + info.reward;
         uint256 penalty;
 
         uint256 stakedFor = block.timestamp + info.duration - info.endTime;
         if (block.timestamp < info.endTime) {
-            /// Check early penalty
+            /// calculate early penalty
             uint256 penaltyDays = (info.duration + 1) / 2;
             if (penaltyDays < EARLY_PENALTY_GRACE)
                 penaltyDays = EARLY_PENALTY_GRACE;
-            penalty = (info.reward * penaltyDays) / stakedFor;
+
+            if (stakedFor == 0 || penaltyDays >= stakedFor) {
+                penalty = realAmount;
+            } else {
+                penalty = (realAmount * penaltyDays) / stakedFor;
+            }
         } else {
-            /// Check late penalty
-            if (block.timestamp > info.endTime + LATE_PENALTY_GRACE * 2) {
-                penalty = info.reward;
-            } else if (block.timestamp > info.endTime + LATE_PENALTY_GRACE) {
+            /// calculate late penalty
+            if (block.timestamp > info.endTime + LATE_PENALTY_GRACE) {
                 penalty =
-                    (info.reward *
+                    (realAmount *
                         (block.timestamp - info.endTime - LATE_PENALTY_GRACE)) /
-                    LATE_PENALTY_GRACE;
+                    LATE_PENALTY_SCALE;
             }
         }
 
-        uint256 realAmount = info.amount + info.reward;
-        if (penalty > 0) {
-            if (penalty > realAmount) {
-                penalty = realAmount;
-                realAmount = 0;
-            } else {
-                realAmount -= penalty;
-            }
+        if (penalty > realAmount) {
+            penalty = realAmount;
+            realAmount = 0;
+        } else if (penalty > 0) {
+            realAmount -= penalty;
         }
+
         _notifyRewardAmount(penalty);
 
         delete stakeInfos[stakeId];
@@ -266,9 +278,13 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
     function _notifyRewardAmount(uint256 reward) internal {
         _updateReward(0);
 
-        uint256 remaining = lastTimeRewardApplicable() - block.timestamp;
-        uint256 leftover = remaining * rewardRate;
-        rewardRate = (reward + leftover) / remaining;
+        if (block.timestamp >= roundEndTime) {
+            pendingReward += reward;
+        } else {
+            uint256 remaining = roundEndTime - block.timestamp;
+            uint256 leftover = remaining * rewardRate;
+            rewardRate = (reward + leftover) / remaining;
+        }
         lastUpdateTime = block.timestamp;
 
         emit RewardAdded(reward);
