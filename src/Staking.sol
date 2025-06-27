@@ -169,6 +169,8 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
         uint256 amountToPay = _takePenalty(stakeId);
         if (amountToPay > 0) stakingToken.safeTransfer(msg.sender, amountToPay);
 
+        stakerStakeIds[msg.sender].remove(stakeId);
+
         emit Unstaked(stakeId);
         return amountToPay;
     }
