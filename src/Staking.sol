@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 
-contract Staking is Ownable, ReentrancyGuard, Pausable {
+contract Staking is
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable
+{
     using EnumerableSet for EnumerableSet.UintSet;
     using SafeERC20 for IERC20;
 
@@ -23,10 +27,11 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
 
     /* ============ STATE VARIABLES =========== */
 
-    uint256 internal constant ROUND_DURATION = 1000 days;
+    uint256 internal constant ROUND_DURATION = 5555 days;
     uint256 internal constant EARLY_PENALTY_GRACE = 90 days;
     uint256 internal constant LATE_PENALTY_GRACE = 14 days;
     uint256 internal constant LATE_PENALTY_SCALE = 700 days;
+    uint256 internal constant CHARGE_GRACE = 10 days;
 
     IERC20 public immutable stakingToken;
 
@@ -65,6 +70,7 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
     error ZeroAddress();
     error ZeroAmount();
     error InvalidStaker();
+    error TooLateCharge();
     error RoundInProgress();
     error CannotRecoverStakingToken();
 
@@ -77,9 +83,16 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
 
     /* ============== CONSTRUCTOR ============= */
 
-    constructor(address _stakingToken) Ownable(msg.sender) {
-        rewardCharger = msg.sender;
+    constructor(address _stakingToken) {
         stakingToken = IERC20(_stakingToken);
+    }
+
+    function initialize() external initializer {
+        __Ownable_init(msg.sender);
+        __ReentrancyGuard_init();
+        __Pausable_init();
+
+        rewardCharger = msg.sender;
     }
 
     /* ============ VIEW FUNCTIONS ============ */
@@ -195,6 +208,8 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
             pendingReward += reward;
         } else {
             uint256 remaining = roundEndTime - block.timestamp;
+            if (remaining < CHARGE_GRACE) revert TooLateCharge();
+
             uint256 leftover = remaining * rewardRate;
             rewardRate = (reward + leftover) / remaining;
         }
@@ -241,7 +256,7 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
         uint256 realAmount = info.amount + info.reward;
         uint256 penalty;
 
-        uint256 stakedFor = block.timestamp + info.duration - info.endTime;
+        uint256 stakedFor = block.timestamp - (info.endTime - info.duration);
         if (block.timestamp < info.endTime) {
             /// calculate early penalty
             uint256 penaltyDays = (info.duration + 1) / 2;

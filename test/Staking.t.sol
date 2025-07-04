@@ -16,7 +16,7 @@ contract StakingTest is Test {
     address public bob = makeAddr("bob");
     address public charlie = makeAddr("charlie");
 
-    uint256 constant STAKE_AMOUNT = 10 ether;
+    uint256 constant STAKE_AMOUNT = 1000 ether;
     uint256 constant STAKE_DURATION_1 = 50 days;
     uint256 constant STAKE_DURATION_2 = 100 days;
     uint256 constant STAKE_DURATION_3 = 200 days;
@@ -26,6 +26,7 @@ contract StakingTest is Test {
     function setUp() public {
         stakingToken = new MockToken();
         staking = new Staking(address(stakingToken));
+        staking.initialize();
         stakingAddress = address(staking);
         stakingTokenAddress = address(stakingToken);
     }
@@ -91,7 +92,7 @@ contract StakingTest is Test {
         assertEq(staking.roundCounter(), roundCounter + 1);
         assertEq(staking.pendingReward(), 0);
         assertEq(staking.rewardRate(), 0);
-        assertEq(staking.roundEndTime(), block.timestamp + 1000 days);
+        assertEq(staking.roundEndTime(), block.timestamp + 5555 days);
 
         vm.startPrank(alice);
         vm.expectRevert();
@@ -108,7 +109,7 @@ contract StakingTest is Test {
         vm.expectRevert(Staking.RoundInProgress.selector);
         staking.startRound();
 
-        vm.warp(block.timestamp + 1001 days);
+        vm.warp(block.timestamp + 5556 days);
 
         staking.startRound();
         assertEq(staking.roundCounter(), 3);
@@ -125,7 +126,7 @@ contract StakingTest is Test {
 
         staking.startRound();
         assertEq(staking.pendingReward(), 0);
-        assertEq(staking.rewardRate(), STAKE_AMOUNT / 2 / 1000 days);
+        assertEq(staking.rewardRate(), STAKE_AMOUNT / 2 / 5555 days);
         assertEq(staking.isRoundInProgress(), true);
 
         vm.startPrank(rewardCharger);
@@ -133,7 +134,7 @@ contract StakingTest is Test {
         vm.stopPrank();
 
         assertEq(staking.pendingReward(), 0);
-        assertEq(staking.rewardRate(), STAKE_AMOUNT / 1000 days);
+        assertEq(staking.rewardRate(), STAKE_AMOUNT / 5555 days);
         assertEq(staking.isRoundInProgress(), true);
     }
 
