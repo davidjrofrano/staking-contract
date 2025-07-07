@@ -16,10 +16,10 @@ contract StakingTest is Test {
     address public bob = makeAddr("bob");
     address public charlie = makeAddr("charlie");
 
-    uint256 constant STAKE_AMOUNT = 10 ether;
-    uint256 constant STAKE_DURATION_1 = 50 days;
+    uint256 constant STAKE_AMOUNT = 100 ether;
+    uint256 constant STAKE_DURATION_1 = 10 days;
     uint256 constant STAKE_DURATION_2 = 100 days;
-    uint256 constant STAKE_DURATION_3 = 200 days;
+    uint256 constant STAKE_DURATION_3 = 1000 days;
 
     /* ============ SETUP FUNCTIONS =========== */
 
@@ -91,7 +91,7 @@ contract StakingTest is Test {
         assertEq(staking.roundCounter(), roundCounter + 1);
         assertEq(staking.pendingReward(), 0);
         assertEq(staking.rewardRate(), 0);
-        assertEq(staking.roundEndTime(), block.timestamp + 1000 days);
+        assertEq(staking.roundEndTime(), block.timestamp + 5555 days);
 
         vm.startPrank(alice);
         vm.expectRevert();
@@ -108,7 +108,7 @@ contract StakingTest is Test {
         vm.expectRevert(Staking.RoundInProgress.selector);
         staking.startRound();
 
-        vm.warp(block.timestamp + 1001 days);
+        vm.warp(block.timestamp + 5556 days);
 
         staking.startRound();
         assertEq(staking.roundCounter(), 3);
@@ -125,7 +125,7 @@ contract StakingTest is Test {
 
         staking.startRound();
         assertEq(staking.pendingReward(), 0);
-        assertEq(staking.rewardRate(), STAKE_AMOUNT / 2 / 1000 days);
+        assertEq(staking.rewardRate(), STAKE_AMOUNT / 2 / 5555 days);
         assertEq(staking.isRoundInProgress(), true);
 
         vm.startPrank(rewardCharger);
@@ -133,7 +133,7 @@ contract StakingTest is Test {
         vm.stopPrank();
 
         assertEq(staking.pendingReward(), 0);
-        assertEq(staking.rewardRate(), STAKE_AMOUNT / 1000 days);
+        assertEq(staking.rewardRate(), STAKE_AMOUNT / 5555 days);
         assertEq(staking.isRoundInProgress(), true);
     }
 
@@ -167,13 +167,13 @@ contract StakingTest is Test {
     /* ======= MUTATIVE FUNCTIONS TESTS ======= */
 
     /**
-     * alice stakes day {0} for {50} days and unstaked at day {196}
-     * bob stakes day {5} for {100} days and unstaked at day {96}
-     * charlie stakes day {55} for {200} days and unstaked at day {196}
+     * alice stakes day {0} for {10} days and unstaked at day {94},
+     * bob stakes day {10} for {100} days and unstaked at day {114}
+     * charlie stakes day {10} for {1000} days and unstaked at day {1000}
      *
-     * alice should pay late penalty |=> (196 - 50 - 14) / 700 = 132 / 700
-     * bob should pay early penalty |=> (max(100/2, 90)) / (96 - 5) = 90 / 91
-     * charlie should pay early penalty |=> (max(200/2, 90)) / (196 - 55) = 100 / 141
+     * alice should pay late penalty |=> (94 - 10 - 14) / 700 = 70 / 700 = 10%
+     * bob pays no penalty |=> (114 - 110) < 14
+     * charlie should pay early penalty |=> (1010 - 1000) / 1000 = 10 / 1000 = 1%
      */
     function test_stake_and_unstake() public {
         setupUsers();
@@ -191,50 +191,22 @@ contract StakingTest is Test {
         assertEq(info.staker, alice);
         assertEq(staking.totalStaked(), STAKE_AMOUNT);
 
-        vm.warp(block.timestamp + 5 days);
+        vm.warp(block.timestamp + 10 days);
 
         vm.startPrank(bob);
         uint256 bobStakeId = staking.stake(STAKE_AMOUNT, STAKE_DURATION_2);
         assertEq(staking.totalStaked(), STAKE_AMOUNT * 2);
         vm.stopPrank();
 
-        vm.warp(block.timestamp + 50 days);
-
         vm.startPrank(charlie);
         uint256 charlieStakeId = staking.stake(STAKE_AMOUNT, STAKE_DURATION_3);
         assertEq(staking.totalStaked(), STAKE_AMOUNT * 3);
         vm.stopPrank();
 
-        vm.warp(block.timestamp + 41 days);
-
-        uint256 bobAmount = staking.earned(bobStakeId) + STAKE_AMOUNT;
-        uint256 bobPenalty = (bobAmount * 90) / 91;
-        uint256 bobBalance = stakingToken.balanceOf(bob);
-        vm.startPrank(bob);
-        staking.unstake(bobStakeId);
-        assertEq(
-            stakingToken.balanceOf(bob) - bobBalance,
-            bobAmount - bobPenalty
-        );
-        assertEq(staking.totalStaked(), STAKE_AMOUNT * 2);
-        vm.stopPrank();
-
-        vm.warp(block.timestamp + 100 days);
-
-        uint256 charlieAmount = staking.earned(charlieStakeId) + STAKE_AMOUNT;
-        uint256 charliePenalty = (charlieAmount * 100) / 141;
-        uint256 charlieBalance = stakingToken.balanceOf(charlie);
-        vm.startPrank(charlie);
-        staking.unstake(charlieStakeId);
-        assertEq(
-            stakingToken.balanceOf(charlie) - charlieBalance,
-            charlieAmount - charliePenalty
-        );
-        assertEq(staking.totalStaked(), STAKE_AMOUNT);
-        vm.stopPrank();
+        vm.warp(block.timestamp + 84 days);
 
         uint256 aliceAmount = staking.earned(aliceStakeId) + STAKE_AMOUNT;
-        uint256 alicePenalty = (aliceAmount * 132) / 700;
+        uint256 alicePenalty = (aliceAmount * 70) / 700;
         uint256 aliceBalance = stakingToken.balanceOf(alice);
         vm.startPrank(alice);
         staking.unstake(aliceStakeId);
@@ -242,7 +214,37 @@ contract StakingTest is Test {
             stakingToken.balanceOf(alice) - aliceBalance,
             aliceAmount - alicePenalty
         );
+        assertEq(staking.totalStaked(), STAKE_AMOUNT * 2);
+        assertEq(
+            stakingToken.balanceOf(stakingAddress),
+            staking.totalStaked() + alicePenalty
+        );
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 20 days);
+
+        uint256 bobAmount = staking.earned(bobStakeId) + STAKE_AMOUNT;
+        uint256 bobBalance = stakingToken.balanceOf(bob);
+        vm.startPrank(bob);
+        staking.unstake(bobStakeId);
+        assertEq(stakingToken.balanceOf(bob) - bobBalance, bobAmount);
+        assertEq(staking.totalStaked(), STAKE_AMOUNT);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 886 days);
+
+        uint256 charlieAmount = staking.earned(charlieStakeId) + STAKE_AMOUNT;
+        uint256 charliePenalty = (charlieAmount * 10) / 1000;
+        uint256 charlieBalance = stakingToken.balanceOf(charlie);
+        vm.startPrank(charlie);
+        staking.unstake(charlieStakeId);
+        assertEq(
+            stakingToken.balanceOf(charlie) - charlieBalance,
+            charlieAmount - charliePenalty
+        );
         assertEq(staking.totalStaked(), 0);
         vm.stopPrank();
+
+        assertGt(stakingToken.balanceOf(stakingAddress), 0);
     }
 }

@@ -23,10 +23,11 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
 
     /* ============ STATE VARIABLES =========== */
 
-    uint256 internal constant ROUND_DURATION = 1000 days;
+    uint256 internal constant ROUND_DURATION = 5555 days;
     uint256 internal constant EARLY_PENALTY_GRACE = 90 days;
     uint256 internal constant LATE_PENALTY_GRACE = 14 days;
     uint256 internal constant LATE_PENALTY_SCALE = 700 days;
+    uint256 internal constant CHARGE_GRACE = 10 days;
 
     IERC20 public immutable stakingToken;
 
@@ -65,6 +66,7 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
     error ZeroAddress();
     error ZeroAmount();
     error InvalidStaker();
+    error TooLateCharge();
     error RoundInProgress();
     error CannotRecoverStakingToken();
 
@@ -195,6 +197,8 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
             pendingReward += reward;
         } else {
             uint256 remaining = roundEndTime - block.timestamp;
+            if (remaining < CHARGE_GRACE) revert TooLateCharge();
+
             uint256 leftover = remaining * rewardRate;
             rewardRate = (reward + leftover) / remaining;
         }
@@ -241,18 +245,10 @@ contract Staking is Ownable, ReentrancyGuard, Pausable {
         uint256 realAmount = info.amount + info.reward;
         uint256 penalty;
 
-        uint256 stakedFor = block.timestamp + info.duration - info.endTime;
         if (block.timestamp < info.endTime) {
             /// calculate early penalty
-            uint256 penaltyDays = (info.duration + 1) / 2;
-            if (penaltyDays < EARLY_PENALTY_GRACE)
-                penaltyDays = EARLY_PENALTY_GRACE;
-
-            if (stakedFor == 0 || penaltyDays >= stakedFor) {
-                penalty = realAmount;
-            } else {
-                penalty = (realAmount * penaltyDays) / stakedFor;
-            }
+            uint256 unservedDays = info.endTime - block.timestamp;
+            penalty = (realAmount * unservedDays) / info.duration;
         } else {
             /// calculate late penalty
             if (block.timestamp > info.endTime + LATE_PENALTY_GRACE) {
